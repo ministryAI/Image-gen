@@ -133,7 +133,8 @@
     <div class="options">
       <label>Size
         <select id="size">
-          <option value="512" selected>Small (fastest, best for 16 GB)</option>
+          <option value="auto" selected>Auto (match the picture, up to 1024)</option>
+          <option value="512">Small (fastest, best for 16 GB)</option>
           <option value="768">Medium</option>
           <option value="1024">Large (slow, needs more memory)</option>
         </select>
@@ -293,9 +294,17 @@
     }
   }
 
+  // "auto" keeps the input picture's own size (capped at 1024 for memory); Create mode uses 512.
+  function sizeLimit() {
+    const v = $("size").value;
+    if (v !== "auto") return Number(v);
+    if (mode === "create" || !dims[0]) return 512;
+    return Math.min(1024, Math.max(...dims[0]));
+  }
+
   // ----- Sizing: follow Picture 1's shape, capped at the chosen size -----
   function outputSize() {
-    const max = Number($("size").value);
+    const max = sizeLimit();
     let [w, h] = (mode !== "create" && dims[0]) ? dims[0] : [max, max];
     const s = max / Math.max(w, h);
     const r16 = (v) => Math.max(256, Math.round((v * s) / 16) * 16);
@@ -409,7 +418,7 @@
       setStatus("Uploading your pictures…");
       let graph;
       if (mode === "edit" && maskHasPaint()) {
-        const [pic, mask] = await maskedUploads(Number($("size").value));
+        const [pic, mask] = await maskedUploads(sizeLimit());
         graph = buildMaskedGraph(await upload(pic), await upload(mask), text);
       } else {
         const want = mode === "create" ? [] : (mode === "scene" ? [files[0], files[1]] : [files[0]]);
