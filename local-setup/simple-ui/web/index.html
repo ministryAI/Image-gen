@@ -37,7 +37,8 @@
   .drop img, .result img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
   form[data-mode="create"] .inputs { display: none; }
   .painter { margin-top: 12px; border: 1px solid var(--border); border-radius: 12px; padding: 10px; }
-  form:not([data-mode="edit"]) .painter { display: none; }
+  form:not([data-mode="edit"]) .painter, form:not([data-mode="edit"]) .mask-toggle { display: none; }
+  .mask-toggle { display: flex; gap: 8px; align-items: center; margin-top: 12px; font-size: .9rem; cursor: pointer; }
   .painter-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; font-size: .9rem; }
   .painter-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: .85rem; color: var(--muted); }
   .painter-tools button { font: inherit; font-size: .85rem; padding: 4px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer; }
@@ -100,6 +101,7 @@
             <label class="drop"><span class="hint">Click or drop your character's picture</span><img hidden alt="" /><input type="file" accept="image/*" hidden /></label>
           </div>
         </div>
+        <label class="mask-toggle" id="maskToggleRow" hidden><input type="checkbox" id="maskToggle" /> Only change part of the picture (paint the area)</label>
         <div class="painter" id="painter" hidden>
           <div class="painter-head">
             <strong>Choose what to change <span style="font-weight:400;color:var(--muted)">(optional)</span></strong>
@@ -215,7 +217,7 @@
       const w = Math.round(img.naturalWidth * scale), h = Math.round(img.naturalHeight * scale);
       for (const c of [baseCanvas, maskCanvas]) { c.width = w; c.height = h; }
       baseCanvas.getContext("2d").drawImage(img, 0, 0, w, h);
-      clearMask(); painter.hidden = false;
+      clearMask(); $("maskToggleRow").hidden = false; painter.hidden = !$("maskToggle").checked;
     };
     img.src = URL.createObjectURL(file);
   }
@@ -238,8 +240,9 @@
   $("brushBtn").addEventListener("click", () => { erasing = false; $("brushBtn").setAttribute("aria-pressed", "true"); $("eraseBtn").setAttribute("aria-pressed", "false"); });
   $("eraseBtn").addEventListener("click", () => { erasing = true; $("eraseBtn").setAttribute("aria-pressed", "true"); $("brushBtn").setAttribute("aria-pressed", "false"); });
   $("clearMask").addEventListener("click", clearMask);
+  $("maskToggle").addEventListener("change", () => { painter.hidden = !$("maskToggle").checked; });
   function maskHasPaint() {
-    if (!painted || !maskCanvas.width) return false;
+    if (!$("maskToggle").checked || !painted || !maskCanvas.width) return false;
     const d = mctx.getImageData(0, 0, maskCanvas.width, maskCanvas.height).data;
     for (let i = 3; i < d.length; i += 4) if (d[i] > 0) return true;
     return false;
