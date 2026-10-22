@@ -155,6 +155,9 @@
 <script>
 (() => {
   const TEXT_ENCODER = "qwen_2.5_vl_7b_fp8_scaled.safetensors";
+  // Smaller GGUF text reader (add-speed-pack.sh); used instead when present.
+  const TEXT_ENCODER_GGUF = "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf";
+  let useGgufEncoder = false;
   const VAE = "qwen_image_vae.safetensors";
   const PLACEHOLDERS = {
     edit: "Describe the change, e.g. “change the background to a candle-lit library at night; keep her face, hair and pose”",
@@ -275,8 +278,12 @@
       const info = await r.json();
       const names = info.UnetLoaderGGUF.input.required.unet_name[0];
       names.forEach((n) => sel.add(new Option(n.replace(/\.gguf$/, ""), n)));
-      const pref = names.find((n) => /Q3/i.test(n)) || names[0];
+      const pref = names.find((n) => /Q2/i.test(n)) || names.find((n) => /Q3/i.test(n)) || names[0];
       if (pref) sel.value = pref;
+      try {
+        const c = await (await fetch("/object_info/CLIPLoaderGGUF")).json();
+        useGgufEncoder = c.CLIPLoaderGGUF.input.required.clip_name[0].includes(TEXT_ENCODER_GGUF);
+      } catch {}
       if (!names.length) setStatus("No compressed model found on the drive. Run add-lite-qwen.sh first.", "error");
     } catch {
       setStatus("Couldn't read the models list. Is the GGUF add-on installed? (add-lite-qwen.sh)", "error");
@@ -306,7 +313,9 @@
   function buildGraph(imageNames, text, w, h) {
     const g = {
       "10": { class_type: "UnetLoaderGGUF", inputs: { unet_name: $("model").value } },
-      "11": { class_type: "CLIPLoader", inputs: { clip_name: TEXT_ENCODER, type: "qwen_image", device: "default" } },
+      "11": useGgufEncoder
+        ? { class_type: "CLIPLoaderGGUF", inputs: { clip_name: TEXT_ENCODER_GGUF, type: "qwen_image" } }
+        : { class_type: "CLIPLoader", inputs: { clip_name: TEXT_ENCODER, type: "qwen_image", device: "default" } },
       "12": { class_type: "VAELoader", inputs: { vae_name: VAE } },
       "3": { class_type: "TextEncodeQwenImageEditPlus", inputs: { clip: ["11", 0], vae: ["12", 0], prompt: text } },
       "4": { class_type: "TextEncodeQwenImageEditPlus", inputs: { clip: ["11", 0], vae: ["12", 0], prompt: "" } },
