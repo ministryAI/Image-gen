@@ -36,6 +36,16 @@
   .result { border-style: solid; cursor: default; }
   .drop img, .result img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
   form[data-mode="create"] .inputs { display: none; }
+  .painter { margin-top: 12px; border: 1px solid var(--border); border-radius: 12px; padding: 10px; }
+  form:not([data-mode="edit"]) .painter { display: none; }
+  .painter-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; font-size: .9rem; }
+  .painter-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: .85rem; color: var(--muted); }
+  .painter-tools button { font: inherit; font-size: .85rem; padding: 4px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer; }
+  .painter-tools button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .canvas-wrap { position: relative; margin-top: 8px; touch-action: none; }
+  .canvas-wrap canvas { display: block; width: 100%; height: auto; border-radius: 8px; }
+  .canvas-wrap canvas.overlay { position: absolute; inset: 0; cursor: crosshair; opacity: .55; }
+  .painter small { color: var(--muted); }
   form[data-mode="create"] .panes { grid-template-columns: 1fr; }
   form[data-mode="create"] .result-pane { max-width: 560px; width: 100%; margin: 0 auto; }
   form:not([data-mode="scene"]) .slot.second { display: none; }
@@ -89,6 +99,19 @@
             <span class="slot-label">Picture 2: your character</span>
             <label class="drop"><span class="hint">Click or drop your character's picture</span><img hidden alt="" /><input type="file" accept="image/*" hidden /></label>
           </div>
+        </div>
+        <div class="painter" id="painter" hidden>
+          <div class="painter-head">
+            <strong>Choose what to change <span style="font-weight:400;color:var(--muted)">(optional)</span></strong>
+            <div class="painter-tools">
+              <button type="button" id="brushBtn" aria-pressed="true">Brush</button>
+              <button type="button" id="eraseBtn" aria-pressed="false">Eraser</button>
+              <label>Size <input type="range" id="brushSize" min="5" max="120" value="40" /></label>
+              <button type="button" id="clearMask">Clear</button>
+            </div>
+          </div>
+          <div class="canvas-wrap"><canvas id="baseCanvas"></canvas><canvas id="maskCanvas" class="overlay"></canvas></div>
+          <small>Paint over the part to change, then describe the change. Unpainted areas stay exactly as they are. Paint nothing to let it edit the whole picture.</small>
         </div>
       </section>
       <section class="result-pane">
@@ -176,7 +199,62 @@
     img.onload = () => { dims[i] = [img.naturalWidth, img.naturalHeight]; };
     img.src = url; img.hidden = false;
     slots[i].querySelector(".hint").hidden = true;
+    if (i === 0) setupPainter(file);
   }
+  // ----- Mask painter (Edit tab): paint the area that should change -----
+  const painter = $("painter"), baseCanvas = $("baseCanvas"), maskCanvas = $("maskCanvas");
+  const mctx = maskCanvas.getContext("2d");
+  let erasing = false, painting = false, painted = false, lastPt = null;
+  function setupPainter(file) {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, 1024 / Math.max(img.naturalWidth, img.naturalHeight));
+      const w = Math.round(img.naturalWidth * scale), h = Math.round(img.naturalHeight * scale);
+      for (const c of [baseCanvas, maskCanvas]) { c.width = w; c.height = h; }
+      baseCanvas.getContext("2d").drawImage(img, 0, 0, w, h);
+      clearMask(); painter.hidden = false;
+    };
+    img.src = URL.createObjectURL(file);
+  }
+  function clearMask() { mctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height); painted = false; }
+  function canvasPoint(e) {
+    const r = maskCanvas.getBoundingClientRect();
+    return [(e.clientX - r.left) * maskCanvas.width / r.width, (e.clientY - r.top) * maskCanvas.height / r.height];
+  }
+  function stroke(to) {
+    const scale = maskCanvas.width / maskCanvas.getBoundingClientRect().width;
+    mctx.globalCompositeOperation = erasing ? "destination-out" : "source-over";
+    mctx.strokeStyle = mctx.fillStyle = "rgb(255,40,90)";
+    mctx.lineWidth = Number($("brushSize").value) * scale; mctx.lineCap = mctx.lineJoin = "round";
+    mctx.beginPath(); mctx.moveTo(...(lastPt || to)); mctx.lineTo(...to); mctx.stroke();
+    lastPt = to; if (!erasing) painted = true;
+  }
+  maskCanvas.addEventListener("pointerdown", (e) => { painting = true; lastPt = null; maskCanvas.setPointerCapture(e.pointerId); stroke(canvasPoint(e)); });
+  maskCanvas.addEventListener("pointermove", (e) => { if (painting) stroke(canvasPoint(e)); });
+  ["pointerup", "pointercancel"].forEach((t) => maskCanvas.addEventListener(t, () => { painting = false; lastPt = null; }));
+  $("brushBtn").addEventListener("click", () => { erasing = false; $("brushBtn").setAttribute("aria-pressed", "true"); $("eraseBtn").setAttribute("aria-pressed", "false"); });
+  $("eraseBtn").addEventListener("click", () => { erasing = true; $("eraseBtn").setAttribute("aria-pressed", "true"); $("brushBtn").setAttribute("aria-pressed", "false"); });
+  $("clearMask").addEventListener("click", clearMask);
+  function maskHasPaint() {
+    if (!painted || !maskCanvas.width) return false;
+    const d = mctx.getImageData(0, 0, maskCanvas.width, maskCanvas.height).data;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > 0) return true;
+    return false;
+  }
+  const toBlob = (c) => new Promise((res) => c.toBlob(res, "image/png"));
+  // Picture resized to the chosen size, plus a mask PNG where painted pixels are transparent
+  // (ComfyUI's LoadImageMask "alpha" channel turns transparent into "change this").
+  async function maskedUploads(max) {
+    const s = max / Math.max(baseCanvas.width, baseCanvas.height);
+    const w = Math.max(256, Math.round(baseCanvas.width * s / 16) * 16), h = Math.max(256, Math.round(baseCanvas.height * s / 16) * 16);
+    const pic = document.createElement("canvas"); pic.width = w; pic.height = h;
+    pic.getContext("2d").drawImage(baseCanvas, 0, 0, w, h);
+    const mask = document.createElement("canvas"); mask.width = w; mask.height = h;
+    const c = mask.getContext("2d"); c.fillStyle = "#fff"; c.fillRect(0, 0, w, h);
+    c.globalCompositeOperation = "destination-out"; c.drawImage(maskCanvas, 0, 0, w, h);
+    return [new File([await toBlob(pic)], "picture.png", { type: "image/png" }), new File([await toBlob(mask)], "mask.png", { type: "image/png" })];
+  }
+
   slots.forEach((slot, i) => {
     const input = slot.querySelector("input"), drop = slot.querySelector(".drop");
     input.addEventListener("change", () => setFile(i, input.files[0]));
@@ -245,6 +323,20 @@
     return g;
   }
 
+  // Inpainting: only the painted area is regenerated, then pasted back over the original.
+  function buildMaskedGraph(imageName, maskName, text) {
+    const g = buildGraph([imageName], text, 0, 0);
+    delete g["9"];
+    g["71"] = { class_type: "LoadImageMask", inputs: { image: maskName, channel: "alpha" } };
+    g["13"] = { class_type: "GrowMask", inputs: { mask: ["71", 0], expand: 6, tapered_corners: true } };
+    g["14"] = { class_type: "VAEEncode", inputs: { pixels: ["70", 0], vae: ["12", 0] } };
+    g["15"] = { class_type: "SetLatentNoiseMask", inputs: { samples: ["14", 0], mask: ["13", 0] } };
+    g["2"].inputs.latent_image = ["15", 0];
+    g["16"] = { class_type: "ImageCompositeMasked", inputs: { destination: ["70", 0], source: ["5", 0], x: 0, y: 0, resize_source: false, mask: ["13", 0] } };
+    g["6"].inputs.images = ["16", 0];
+    return g;
+  }
+
   function viewUrl(img) {
     return "/view?" + new URLSearchParams({ filename: img.filename, subfolder: img.subfolder || "", type: img.type || "output" });
   }
@@ -303,12 +395,19 @@
     const started = Date.now();
     try {
       setStatus("Uploading your pictures…");
-      const want = mode === "create" ? [] : (mode === "scene" ? [files[0], files[1]] : [files[0]]);
-      const names = [];
-      for (const f of want) names.push(await upload(f));
-      const [w, h] = outputSize();
+      let graph;
+      if (mode === "edit" && maskHasPaint()) {
+        const [pic, mask] = await maskedUploads(Number($("size").value));
+        graph = buildMaskedGraph(await upload(pic), await upload(mask), text);
+      } else {
+        const want = mode === "create" ? [] : (mode === "scene" ? [files[0], files[1]] : [files[0]]);
+        const names = [];
+        for (const f of want) names.push(await upload(f));
+        const [w, h] = outputSize();
+        graph = buildGraph(names, text, w, h);
+      }
       const r = await fetch("/prompt", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: buildGraph(names, text, w, h), client_id: clientId }) });
+        body: JSON.stringify({ prompt: graph, client_id: clientId }) });
       const j = await r.json();
       if (!r.ok || !j.prompt_id) {
         const detail = j.error?.message || JSON.stringify(j.node_errors || j).slice(0, 300);
